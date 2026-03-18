@@ -146,16 +146,22 @@ contract P2PLendingTest is Test {
         p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
         p2p.matchOrders(1);
 
+        vm.warp(block.timestamp + 30 days);
+
         vm.startPrank(bob);
-        asset.approve(address(p2p), BORROW_AMOUNT);
+        asset.approve(address(p2p), type(uint256).max);
         p2p.repay(1);
         vm.stopPrank();
 
-        assertEq(p2p.lenderWithdrawable(alice), BORROW_AMOUNT);
+        uint256 withdrawable = p2p.lenderWithdrawable(alice);
+        assertGt(withdrawable, BORROW_AMOUNT); 
 
         vm.prank(alice);
         p2p.withdraw();
-        assertEq(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT);
+        assertGt(
+            asset.balanceOf(alice),
+            INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT
+        );
         assertEq(p2p.lenderWithdrawable(alice), 0);
     }
 
@@ -198,5 +204,68 @@ contract P2PLendingTest is Test {
         // No match: lender wants 8%, borrower max 5%
         assertEq(asset.balanceOf(bob), INITIAL_BALANCE);
         assertEq(p2p.nextLoanId(), uint256(1));
+    }
+
+    function test_YieldAccruesInAave() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        uint256 before = pool.balanceOf(address(asset), address(connector));
+
+        vm.warp(block.timestamp + 30 days);
+
+        uint256 afterBal = pool.balanceOf(address(asset), address(connector));
+
+        assertGt(afterBal, before); // yield should increase balance
+    }
+
+    function test_PartialMatch_AaveBalanceReducedCorrectly() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+
+        uint256 before = pool.balanceOf(address(asset), address(connector));
+
+        p2p.matchOrders(1);
+
+        uint256 afterBal = pool.balanceOf(address(asset), address(connector));
+
+        assertEq(before - afterBal, BORROW_AMOUNT); // only matched amount withdrawn
+    }
+
+    function test_FullFlow_DepositMatchRepayWithdraw() public {
+        // Deposit
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        // Borrow
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+
+        // Match
+        p2p.matchOrders(1);
+
+        // Time passes
+        vm.warp(block.timestamp + 30 days);
+
+        // Repay
+        vm.startPrank(bob);
+        asset.approve(address(p2p), type(uint256).max);
+        p2p.repay(1);
+        vm.stopPrank();
+
+        // Withdraw
+        vm.prank(alice);
+        p2p.withdraw();
+
+        assertGt(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT);
     }
 }
