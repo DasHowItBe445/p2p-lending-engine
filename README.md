@@ -19,18 +19,20 @@ This design mirrors real-world DeFi primitives such as Aave and on-chain order b
 ```
 src/
 ├── core/
-│ ├── P2PLending.sol # Main protocol: orders, matching, repay, withdraw
-│ └── AaveConnector.sol # Wraps Aave supply/withdraw; only callable by P2PLending
+│   ├── P2PLending.sol          # Main protocol: orders, matching, repay, withdraw
+│   └── AaveConnector.sol       # Wraps Aave supply/withdraw; only callable by P2PLending
 ├── interfaces/
-│ ├── IPool.sol # Minimal Aave V3 Pool (supply, withdraw)
-│ └── IAToken.sol # Minimal aToken interface
+│   ├── IPool.sol               # Minimal Aave V3 Pool (supply, withdraw)
+│   └── IAToken.sol             # Minimal aToken interface
 ├── libraries/
-│ └── OrderTypes.sol # LenderOrder, BorrowOrder, LoanPosition structs; BUCKET_SIZE_BPS
+│   └── OrderTypes.sol          # LenderOrder, BorrowOrder, LoanPosition structs; BUCKET_SIZE_BPS
 └── mocks/
-├── MockERC20.sol # ERC20 with mint (for tests)
-└── MockAavePool.sol # Mock Aave pool for tests
+    ├── MockERC20.sol           # ERC20 with mint (for tests)
+    └── MockAavePool.sol        # Mock Aave pool with yield simulation
+
 test/
-└── P2PLending.t.sol # Unit tests (place, match, cancel, repay, withdraw, reverts)
+├── P2PLending.t.sol            # Unit tests (flows, matching, yield, reverts)
+└── P2PLendingInvariant.t.sol   # Invariant tests (protocol safety properties)
 ```
 ## Flow Diagram
 
@@ -142,13 +144,13 @@ This mirrors real DeFi protocols like Aave and Yearn.
 - **Packed structs**: uint128 for amounts, uint32 for rate/timestamp to use storage slots efficiently.
 - **Custom errors**: Instead of long `require` strings (e.g. `InvalidAmount()`, `Unauthorized()`).
 - **Bounded loops**: `matchOrders(maxItems)` caps work per call.
-- **No full-queue iteration**: Bitset + per-bucket linked list; we only walk non-empty buckets and list heads.
+- **No unbounded iteration**: Bitset + per-bucket linked list ensures matching scans over a bounded range (max 256 buckets).
 - **Single bitset per queue**: 256 buckets in one word; set/clear with bit ops.
 - **Pull-based withdraw**: Lenders call `withdraw()` to claim; avoids push and gas spikes.
 - **Efficient bucket selection**:
-  - Bitset tracks non-empty buckets
-  - Selection scans over a bounded range (max 256 buckets)
-  - Avoids unbounded iteration and ensures predictable gas cost
+  - Bitset tracks non-empty buckets.
+  - Selection scans over a bounded range (max 256 buckets).
+  - Avoids unbounded iteration and ensures predictable gas cost.
 
 ## Testing & Validation
 
@@ -160,6 +162,10 @@ The test suite validates the full protocol lifecycle:
 - **Cancel with yield**: Lenders receive more than principal after time
 - **Repayment with interest**: Lenders receive principal + interest
 - **End-to-end flow**: Deposit → Match → Repay → Withdraw
+- **Invariant testing**: Ensures protocol safety properties such as:
+  - totalShares consistency with totalAssets
+  - no invalid share states
+  - protocol never enters inconsistent accounting states
 
 All tests pass using Foundry (`forge test`).
 
@@ -228,14 +234,32 @@ Deploy order: MockERC20 → MockAavePool → AaveConnector(pool, asset, P2PLendi
 
 ## Design Trade-offs
 
-- **Simple interest vs compound**:
-  - Used simple interest for gas efficiency and deterministic repayment
-- **Full repayment only**:
-  - Avoids complexity of partial repayment accounting
-- **Linked-list queues**:
-  - Enables O(1) insertion/removal without array shifting
-- **Share-based accounting**:
-  - Adds complexity but enables correct yield distribution
+- **Simple interest vs compound interest**:
+  - Chose simple interest for gas efficiency and deterministic repayment.
+  - Avoids continuous state updates and complex accounting required for compounding.
+
+- **Full repayment only (no partial repayment)**:
+  - Simplifies loan accounting and avoids tracking remaining principal over time.
+  - Reduces storage complexity and edge cases in repayment logic.
+
+- **Linked-list order book vs arrays**:
+  - Linked lists enable O(1) insertion and removal without costly array shifting.
+  - Trade-off: cancellation of non-head orders requires traversal (O(n) within a bucket).
+
+- **Bucketed matching with bitset**:
+  - Bucketing reduces search space and ensures bounded iteration (max 256 buckets).
+  - Bitset enables efficient identification of non-empty buckets.
+  - Trade-off: not strictly O(1), but predictable and gas-safe.
+
+- **Share-based accounting for yield distribution**:
+  - Ensures fair, proportional distribution of Aave yield across lenders.
+  - Decouples yield accrual from individual order tracking.
+  - Trade-off: introduces additional complexity in share minting/burning and rounding.
+
+- **Pull-based withdrawals**:
+  - Improves security by avoiding external calls during state updates.
+  - Prevents reentrancy issues and reduces gas spikes.
+  - Trade-off: requires users to manually claim funds.
 
 ## License
 
