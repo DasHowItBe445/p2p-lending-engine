@@ -245,18 +245,18 @@ contract P2PLending is ReentrancyGuard {
     }
 
     function _nextLenderBucket() internal view returns (uint256) {
-        for (uint256 b = 0; b <= OrderTypes.MAX_BUCKET_INDEX; b++) {
-            if ((lenderBucketBitset & (1 << b)) != 0 && lenderHeadOrderId[b] != 0) return b;
-        }
-        return type(uint256).max;
+        uint256 bits = lenderBucketBitset;
+        if (bits == 0) return type(uint256).max;
+
+        uint256 lsb = _lsb(bits); 
+        return _bitIndex(lsb);
     }
 
     function _nextBorrowBucket() internal view returns (uint256) {
-        for (uint256 b = OrderTypes.MAX_BUCKET_INDEX; ; b--) {
-            if ((borrowBucketBitset & (1 << b)) != 0 && borrowHeadOrderId[b] != 0) return b;
-            if (b == 0) break;
-        }
-        return type(uint256).max;
+        uint256 bits = borrowBucketBitset;
+        if (bits == 0) return type(uint256).max;
+
+        return _msb(bits); // highest set bit
     }
 
     function cancelLenderOrder(uint256 orderId) external nonReentrant {
@@ -354,5 +354,31 @@ contract P2PLending is ReentrancyGuard {
         asset.safeTransfer(msg.sender, amount);
 
         emit Withdrawn(msg.sender, amount);
+    }
+
+    function _lsb(uint256 x) internal pure returns (uint256) {
+        return x & (~x + 1);
+    }
+
+    function _msb(uint256 x) internal pure returns (uint256) {
+        uint256 r = 0;
+        if (x >= 2**128) { x >>= 128; r += 128; }
+        if (x >= 2**64) { x >>= 64; r += 64; }
+        if (x >= 2**32) { x >>= 32; r += 32; }
+        if (x >= 2**16) { x >>= 16; r += 16; }
+        if (x >= 2**8) { x >>= 8; r += 8; }
+        if (x >= 2**4) { x >>= 4; r += 4; }
+        if (x >= 2**2) { x >>= 2; r += 2; }
+        if (x >= 2**1) { r += 1; }
+        return r;
+    }
+
+    function _bitIndex(uint256 bit) internal pure returns (uint256) {
+        uint256 index = 0;
+        while (bit > 1) {
+            bit >>= 1;
+            index++;
+        }
+        return index;
     }
 }
