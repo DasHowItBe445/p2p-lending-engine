@@ -268,4 +268,74 @@ contract P2PLendingTest is Test {
 
         assertGt(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT);
     }
+
+    function test_YieldDistribution_Fairness() public {
+        // Alice deposits first
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        // Time passes → Alice earns yield
+        vm.warp(block.timestamp + 30 days);
+
+        // Bob deposits later
+        vm.startPrank(bob);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        // More time passes
+        vm.warp(block.timestamp + 30 days);
+
+        // Alice cancels → should get MORE yield than Bob
+        vm.prank(alice);
+        p2p.cancelLenderOrder(1);
+
+        vm.prank(bob);
+        p2p.cancelLenderOrder(2);
+
+        uint256 aliceFinal = asset.balanceOf(alice);
+        uint256 bobFinal = asset.balanceOf(bob);
+
+        assertGt(aliceFinal, bobFinal);
+    }
+
+    function test_Revert_RepayTwice() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+
+        p2p.matchOrders(1);
+
+        vm.startPrank(bob);
+        asset.approve(address(p2p), type(uint256).max);
+        p2p.repay(1);
+
+        vm.expectRevert(P2PLending.LoanNotFound.selector);
+        p2p.repay(1);
+    }
+
+    function test_YieldNotStolenOnMatch() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+
+        p2p.matchOrders(1);
+
+        vm.prank(alice);
+        p2p.cancelLenderOrder(1);
+
+        assertGt(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT);
+    }
 }

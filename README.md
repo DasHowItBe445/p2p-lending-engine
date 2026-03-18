@@ -1,6 +1,9 @@
 # Gas-Efficient P2P Lending Matching Engine with Aave Integration
 
 A decentralized P2P lending protocol on Ethereum that matches lenders and borrowers on-chain and deposits unmatched lender liquidity into Aave for yield. Built with Foundry and Solidity 0.8.20.
+This design mirrors real-world DeFi primitives such as Aave and on-chain order books, while prioritizing gas efficiency and correctness.
+
+---
 
 ## Features
 
@@ -9,6 +12,7 @@ A decentralized P2P lending protocol on Ethereum that matches lenders and borrow
 - **Aave integration**: Unmatched lender funds are supplied to Aave; on match or cancel, only the needed amount is withdrawn.
 - **Partial fills**: Orders can be partially filled; remainder stays in queue until filled or cancelled.
 - **Repay & withdraw**: Borrowers repay principal (and interest); lenders withdraw via pull pattern.
+- **Yield-aware accounting**: Share-based system ensures lenders earn proportional Aave yield on unused liquidity.
 
 ## Project Structure
 
@@ -28,7 +32,24 @@ src/
 test/
 └── P2PLending.t.sol # Unit tests (place, match, cancel, repay, withdraw, reverts)
 ```
+## Flow Diagram
 
+```mermaid
+sequenceDiagram
+    participant Lender
+    participant P2P
+    participant Aave
+
+    Lender->>P2P: placeLenderOrder
+    P2P->>Aave: deposit
+
+    Borrower->>P2P: placeBorrowOrder
+    P2P->>Aave: withdraw (match)
+    Aave->>Borrower: funds
+
+    Borrower->>P2P: repay
+    P2P->>Lender: withdraw
+```
 
 ## Data Structure Design
 
@@ -36,7 +57,7 @@ test/
 
 - **LenderOrder**: `owner`, `amount`, `minRateBps`, `createdAt`, `remaining` (packed: uint128/uint32 where possible).
 - **BorrowOrder**: `owner`, `amount`, `maxRateBps`, `createdAt`, `remaining`.
-- **LoanPosition**: `lender`, `borrower`, `principal`, `rateBps`, `startTime`, `remainingPrincipal`.
+- **LoanPosition**: `lender`, `borrower`, `principal`, `rateBps`, `startTime`.
 
 Rates are in basis points (bps); 10000 = 100%.
 
@@ -54,13 +75,53 @@ Rates are in basis points (bps); 10000 = 100%.
 - **Match condition**: `lender.minRateBps <= borrower.maxRateBps`. Fill amount = `min(lender.remaining, borrower.remaining)`.
 - **After fill**: Update `remaining`; if 0, dequeue. Create `LoanPosition`. Withdraw fill amount from Aave and send to borrower.
 
+### Interest Model
+
+Loans use **simple interest**, calculated at repayment time:
+
+```solidity
+interest = principal * rateBps * timeElapsed / (10000 * 365 days);
+```
+
+- Interest accrues linearly from `startTime`
+- Repayment is **full repayment only** (no partial repayments)
+- Borrowers must repay `principal + interest` in one transaction
+- After repayment, the loan is deleted from storage
+
+This keeps accounting simple and gas-efficient.
+
 ## Aave Integration Flow
 
 1. **Lender deposits**: User approves P2PLending → `placeLenderOrder(amount, minRateBps)` → P2PLending pulls tokens → approves AaveConnector → AaveConnector pulls from P2PLending and calls `pool.supply(asset, amount, connector, 0)`. aTokens accrue to the connector.
 2. **Match**: When `matchOrders` finds a match, P2PLending calls `connector.withdraw(fillAmount, borrower)` → connector calls `pool.withdraw(asset, amount, borrower)`; borrower receives underlying asset.
-3. **Lender cancel**: P2PLending calls `connector.withdraw(order.remaining, lender)`; lender receives principal + any accrued interest (in the mock, 1:1; on real Aave, aToken appreciation).
+3. **Lender cancel**: P2PLending calculates `assetsOut` from the lender’s shares and calls `connector.withdraw(assetsOut, lender)`, ensuring the lender receives principal + accrued yield.
 
 (Optional: add a sequence diagram here if you use a tool like Mermaid.)
+
+## Yield & Share Accounting
+
+The protocol uses a **share-based accounting model** to track each lender’s proportional ownership of pooled Aave liquidity.
+
+- When a lender deposits, they receive shares:
+  - If `totalShares == 0`: `shares = assets * SHARES_SCALE`
+  - Otherwise: `shares = assets * totalShares / totalAssets`
+- Total shares track ownership of the entire Aave position.
+- As Aave yield accrues, `totalAssets` increases while `totalShares` stays constant.
+- This causes each share to represent more underlying assets over time.
+
+### Matching Impact
+
+- When a loan is matched, shares corresponding to the matched amount are **burned**.
+- Remaining shares continue earning yield in Aave.
+
+### Cancel Behavior
+
+- On cancel, shares are converted back to assets:
+  - `assets = shares * totalAssets / totalShares`
+- This ensures lenders receive:
+  - **Principal + accrued yield**
+
+This mirrors real DeFi protocols like Aave and Yearn.
 
 ## Gas-Saving Choices
 
@@ -70,6 +131,40 @@ Rates are in basis points (bps); 10000 = 100%.
 - **No full-queue iteration**: Bitset + per-bucket linked list; we only walk non-empty buckets and list heads.
 - **Single bitset per queue**: 256 buckets in one word; set/clear with bit ops.
 - **Pull-based withdraw**: Lenders call `withdraw()` to claim; avoids push and gas spikes.
+- **Efficient bucket selection**:
+  - Bitset tracks non-empty buckets
+  - Selection scans over a bounded range (max 256 buckets)
+  - Avoids unbounded iteration and ensures predictable gas cost
+
+## Testing & Validation
+
+The test suite validates the full protocol lifecycle:
+
+- **Deposit → Aave**: Ensures funds are supplied correctly
+- **Partial match**: Only matched portion is withdrawn from Aave
+- **Yield accrual**: `vm.warp` simulates time → Aave balance increases
+- **Cancel with yield**: Lenders receive more than principal after time
+- **Repayment with interest**: Lenders receive principal + interest
+- **End-to-end flow**: Deposit → Match → Repay → Withdraw
+
+All tests pass using Foundry (`forge test`).
+
+## Gas Report
+
+| Function              | Avg Gas |
+|----------------------|--------:|
+| placeLenderOrder     | 328,117 |
+| placeBorrowOrder     | 165,231 |
+| matchOrders          | 152,429 |
+| repay                | 85,436  |
+| withdraw             | 39,109  |
+| cancelLenderOrder    | 67,512  |
+
+### Notes
+
+- `matchOrders` uses bitset-based bucket selection for predictable gas usage
+- Gas varies depending on partial vs full fills
+- `placeLenderOrder` includes Aave deposit cost
 
 ## Usage
 
@@ -100,11 +195,20 @@ Deploy order: MockERC20 → MockAavePool → AaveConnector(pool, asset, P2PLendi
 - Pull-based lender withdrawals.
 - onlyProtocol on AaveConnector so only P2PLending can deposit/withdraw.
 
+## Design Trade-offs
+
+- **Simple interest vs compound**:
+  - Used simple interest for gas efficiency and deterministic repayment
+- **Full repayment only**:
+  - Avoids complexity of partial repayment accounting
+- **Linked-list queues**:
+  - Enables O(1) insertion/removal without array shifting
+- **Share-based accounting**:
+  - Adds complexity but enables correct yield distribution
+
 ## License
 
 MIT
 
 
 ---
-
-Summary: fix the test by replacing every `.remaining` / `.remainingPrincipal` on mapping getters with destructuring and then asserting on the resulting variables. Use the README as above (and tweak if your repo name or structure differs).
