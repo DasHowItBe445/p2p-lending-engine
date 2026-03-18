@@ -132,7 +132,8 @@ contract P2PLendingTest is Test {
         p2p.cancelLenderOrder(1);
         vm.stopPrank();
 
-        assertGt(asset.balanceOf(alice), aliceBefore + LEND_AMOUNT);
+        uint256 expectedMin = aliceBefore + LEND_AMOUNT;
+        assertGt(asset.balanceOf(alice), expectedMin);
         (, , , , uint128 remainingAfterCancel) = p2p.lenderOrders(1);
         assertEq(remainingAfterCancel, 0);
     }
@@ -337,5 +338,52 @@ contract P2PLendingTest is Test {
         p2p.cancelLenderOrder(1);
 
         assertGt(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT);
+    }
+
+    function test_ShareRoundingEdge() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), 1);
+        p2p.placeLenderOrder(1, RATE_BPS);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        asset.approve(address(p2p), 1);
+        p2p.placeLenderOrder(1, RATE_BPS);
+        vm.stopPrank();
+
+        // Ensure no zero shares edge case
+        assertGt(p2p.totalShares(), 0);
+    }
+
+    function test_PreviewFunctions() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        uint256 shares = p2p.totalShares();
+
+        uint256 assets = p2p.previewSharesToAssets(shares);
+        assertGt(assets, 0);
+
+        uint256 cancelPreview = p2p.previewCancel(1);
+        assertGt(cancelPreview, 0);
+    }
+
+    function test_CancelAfterPartialMatch() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+
+        p2p.matchOrders(1);
+
+        vm.prank(alice);
+        p2p.cancelLenderOrder(1);
+
+        assertGt(asset.balanceOf(alice), 0);
     }
 }

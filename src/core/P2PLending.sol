@@ -381,4 +381,26 @@ contract P2PLending is ReentrancyGuard {
         }
         return index;
     }
+
+    function previewSharesToAssets(uint256 shares) external view returns (uint256) {
+        return _sharesToAssets(shares);
+    }
+
+    function previewCancel(uint256 orderId) external view returns (uint256) {
+        uint256 shares = lenderOrderShares[orderId];
+        uint256 ts = totalShares;
+        if (ts == 0) return 0;
+
+        uint256 ta = _totalAssets();
+        return (shares * ta) / ts;
+    }
+
+    function previewInterest(uint256 loanId) external view returns (uint256) {
+        OrderTypes.LoanPosition storage pos = loanPositions[loanId];
+        if (pos.borrower == address(0)) return 0;
+
+        uint256 elapsed = block.timestamp - uint256(pos.startTime);
+
+        return (uint256(pos.principal) * pos.rateBps * elapsed) / (10_000 * YEAR);
+    }
 }

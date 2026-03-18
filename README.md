@@ -37,18 +37,32 @@ test/
 ```mermaid
 sequenceDiagram
     participant Lender
-    participant P2P
+    participant Borrower
+    participant P2P as P2PLending
+    participant Connector as AaveConnector
     participant Aave
 
-    Lender->>P2P: placeLenderOrder
-    P2P->>Aave: deposit
+    %% Lender deposits
+    Lender->>P2P: placeLenderOrder(amount, rate)
+    P2P->>Connector: deposit(amount)
+    Connector->>Aave: supply(asset, amount)
 
-    Borrower->>P2P: placeBorrowOrder
-    P2P->>Aave: withdraw (match)
-    Aave->>Borrower: funds
+    %% Borrower request
+    Borrower->>P2P: placeBorrowOrder(amount, rate)
 
-    Borrower->>P2P: repay
-    P2P->>Lender: withdraw
+    %% Matching
+    P2P->>Connector: withdraw(matchedAmount)
+    Connector->>Aave: withdraw(asset, amount)
+    Aave->>Borrower: transfer funds
+
+    %% Repayment
+    Borrower->>P2P: repay(loanId)
+    P2P->>P2P: calculate interest
+    P2P->>P2P: update lenderWithdrawable
+
+    %% Lender withdraw
+    Lender->>P2P: withdraw()
+    P2P->>Lender: transfer principal + interest
 ```
 
 ## Data Structure Design
