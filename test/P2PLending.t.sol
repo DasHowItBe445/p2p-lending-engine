@@ -24,9 +24,9 @@ contract P2PLendingTest is Test {
     // Same signatures as P2PLending for expectEmit
     event LenderOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 minRateBps);
     event BorrowOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 maxRateBps);
-    event Matched(uint256 indexed lenderOrderId, uint256 indexed borrowOrderId, uint256 rateBps, uint256 amount);
-    event LenderOrderCancelled(uint256 indexed orderId);
-    event LoanRepaid(uint256 indexed loanId, uint256 amount);
+    event Matched(uint256 indexed lenderOrderId, uint256 indexed borrowOrderId, uint256 rateBps, uint256 amount, uint256 loanId);
+    event LenderOrderCancelled(uint256 indexed orderId, uint256 refundedAmount);
+    event LoanRepaid(uint256 indexed loanId, uint256 totalPaid, uint256 interestPaid);
     event Withdrawn(address indexed user, uint256 amount);
 
     function setUp() public {
@@ -38,7 +38,7 @@ contract P2PLendingTest is Test {
         uint64 nonce = vm.getNonce(address(this));
         address predictedP2P = vm.computeCreateAddress(address(this), nonce + 1);
 
-        connector = new AaveConnector(address(pool), address(asset), predictedP2P);
+        connector = new AaveConnector(address(pool), address(asset), predictedP2P, address(0));
         p2p = new P2PLending(address(asset), address(connector));
 
         // Test contract holds the minted tokens; give some to alice and bob.
@@ -60,7 +60,7 @@ contract P2PLendingTest is Test {
         assertEq(minRateBps, RATE_BPS);
         assertEq(remaining, LEND_AMOUNT);
         assertEq(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT);
-        assertEq(pool.supplied(address(asset), address(connector)), LEND_AMOUNT);
+        assertEq(pool.balanceOf(address(asset), address(connector)), LEND_AMOUNT);
     }
 
     function test_PlaceBorrowOrder() public {
@@ -86,15 +86,14 @@ contract P2PLendingTest is Test {
         p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
 
         vm.expectEmit(true, true, true, true);
-        emit Matched(1, 1, RATE_BPS, BORROW_AMOUNT);
+        emit Matched(1, 1, RATE_BPS, BORROW_AMOUNT, 1);
         p2p.matchOrders(1);
 
         assertEq(asset.balanceOf(bob), INITIAL_BALANCE + BORROW_AMOUNT);
-        (address lender,, uint128 principal, uint32 rateBps,, uint128 remainingPrincipal) = p2p.loanPositions(1);
+        (address lender,, uint128 principal, uint32 rateBps,) = p2p.loanPositions(1);
         assertEq(lender, alice);
         assertEq(principal, BORROW_AMOUNT);
         assertEq(rateBps, RATE_BPS);
-        assertEq(remainingPrincipal, BORROW_AMOUNT);
         (, , , , uint128 lenderRemaining) = p2p.lenderOrders(1);
         (, , , , uint128 borrowRemaining) = p2p.borrowOrders(1);
         assertEq(lenderRemaining, LEND_AMOUNT - BORROW_AMOUNT);
@@ -126,10 +125,14 @@ contract P2PLendingTest is Test {
         asset.approve(address(p2p), LEND_AMOUNT);
         p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
         uint256 aliceBefore = asset.balanceOf(alice);
+
+        // accrue yield in mock Aave
+        vm.warp(block.timestamp + 30 days);
+
         p2p.cancelLenderOrder(1);
         vm.stopPrank();
 
-        assertEq(asset.balanceOf(alice), aliceBefore + LEND_AMOUNT);
+        assertGt(asset.balanceOf(alice), aliceBefore + LEND_AMOUNT);
         (, , , , uint128 remainingAfterCancel) = p2p.lenderOrders(1);
         assertEq(remainingAfterCancel, 0);
     }
@@ -143,19 +146,16 @@ contract P2PLendingTest is Test {
         p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
         p2p.matchOrders(1);
 
-        uint256 repayAmount = BORROW_AMOUNT; // principal only for simplicity
         vm.startPrank(bob);
-        asset.approve(address(p2p), repayAmount);
-        p2p.repay(1, repayAmount);
+        asset.approve(address(p2p), BORROW_AMOUNT);
+        p2p.repay(1);
         vm.stopPrank();
 
-        assertEq(p2p.lenderWithdrawable(alice), repayAmount);
-        (, , , , , uint128 remainingPrincipal) = p2p.loanPositions(1);
-        assertEq(remainingPrincipal, 0);
+        assertEq(p2p.lenderWithdrawable(alice), BORROW_AMOUNT);
 
         vm.prank(alice);
         p2p.withdraw();
-        assertEq(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT + repayAmount);
+        assertEq(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT);
         assertEq(p2p.lenderWithdrawable(alice), 0);
     }
 

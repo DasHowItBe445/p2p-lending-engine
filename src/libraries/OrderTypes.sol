@@ -31,6 +31,5 @@ library OrderTypes {
         uint128 principal;
         uint32 rateBps;
         uint32 startTime;
-        uint128 remainingPrincipal;
     }
 }
