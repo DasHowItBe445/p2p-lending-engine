@@ -151,20 +151,37 @@ All tests pass using Foundry (`forge test`).
 
 ## Gas Report
 
-| Function              | Avg Gas |
-|----------------------|--------:|
-| placeLenderOrder     | 328,117 |
-| placeBorrowOrder     | 165,231 |
-| matchOrders          | 152,429 |
-| repay                | 85,436  |
-| withdraw             | 39,109  |
-| cancelLenderOrder    | 67,512  |
+### P2PLending Contract
+
+| Function              | Min Gas | Avg Gas | Median Gas | Max Gas | # Calls |
+|----------------------|--------:|--------:|-----------:|--------:|--------:|
+| placeLenderOrder     | 26,856  | 335,393 | 388,364    | 388,364 | 16      |
+| placeBorrowOrder     | 165,231 | 165,231 | 165,231    | 165,231 | 9       |
+| matchOrders          | 42,058  | 161,228 | 178,110    | 197,135 | 8       |
+| cancelLenderOrder    | 28,880  | 83,437  | 90,925     | 106,145 | 5       |
+| repay                | 28,929  | 71,309  | 85,436     | 85,436  | 4       |
+| withdraw             | 39,109  | 39,109  | 39,109     | 39,109  | 2       |
+
+### AaveConnector Contract
+
+| Function      | Min Gas | Avg Gas | Median Gas | Max Gas | # Calls |
+|--------------|--------:|--------:|-----------:|--------:|--------:|
+| totalAssets  | 11,123  | 12,086  | 11,123     | 14,013  | 12      |
 
 ### Notes
 
-- `matchOrders` uses bitset-based bucket selection for predictable gas usage
-- Gas varies depending on partial vs full fills
-- `placeLenderOrder` includes Aave deposit cost
+- `matchOrders` uses bucketed matching with bounded iteration → predictable gas usage
+- Gas varies depending on:
+  - Partial vs full fills
+  - Number of iterations (`maxItems`)
+- `placeLenderOrder` includes:
+  - ERC20 transfer
+  - Aave deposit
+  - Share minting logic
+- `cancelLenderOrder` cost varies due to:
+  - Share → asset conversion
+  - Linked-list removal (O(n) within bucket worst case)
+- `repay` is cheaper when interest is small (short time elapsed)
 
 ## Usage
 
