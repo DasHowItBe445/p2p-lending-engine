@@ -12,29 +12,32 @@ import { useOrderCounts } from '@/hooks/use-lending-contract'
 import { FileText, TrendingUp, TrendingDown, Banknote, Clock, CheckCircle, XCircle } from 'lucide-react'
 
 interface LenderOrder {
-  lender: string
+  owner: string
   amount: bigint
-  interestRate: bigint
-  isActive: boolean
-  isMatched: boolean
+  minRateBps: number
+  createdAt: number
+  remaining: bigint
 }
 
 interface BorrowOrder {
-  borrower: string
+  owner: string
   amount: bigint
-  interestRate: bigint
-  isActive: boolean
-  isMatched: boolean
+  maxRateBps: number
+  createdAt: number
+  remaining: bigint
 }
 
-interface Loan {
+interface LoanPosition {
   lender: string
   borrower: string
-  amount: bigint
-  interestRate: bigint
+  principal: bigint
+  rateBps: number
+  startTime: number
+}
+
+interface Loan extends LoanPosition {
   repaymentAmount: bigint
   isRepaid: boolean
-  createdAt: bigint
 }
 
 function OrderCard({ 
@@ -121,7 +124,7 @@ function LoanCard({
           <div>
             <p className="text-sm font-medium text-foreground">Loan #{id}</p>
             <p className="text-xs text-muted-foreground">
-              {new Date(Number(loan.createdAt) * 1000).toLocaleDateString()}
+              {new Date(Number(loan.startTime) * 1000).toLocaleDateString()}
             </p>
           </div>
         </div>
@@ -153,7 +156,7 @@ function LoanCard({
         <div>
           <p className="text-xs text-muted-foreground">Amount</p>
           <p className="text-sm font-medium text-foreground">
-            {Number(formatUnits(loan.amount, 18)).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+            {Number(formatUnits(loan.principal, 18)).toLocaleString(undefined, { maximumFractionDigits: 4 })}
           </p>
         </div>
         <div>
@@ -170,28 +173,33 @@ function LoanCard({
 export function Dashboard() {
   const { lenderOrderCount, borrowOrderCount, loanCount } = useOrderCounts()
 
+  const YEAR_SECONDS = BigInt(365) * BigInt(24) * BigInt(60) * BigInt(60)
+  const BPS_DENOM = BigInt(10_000)
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+  const ZERO = BigInt(0)
+
   // Create read calls for all lender orders
   const lenderOrderCalls = Array.from({ length: lenderOrderCount }, (_, i) => ({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'getLenderOrder' as const,
-    args: [BigInt(i)],
+    functionName: 'lenderOrders' as const,
+    args: [BigInt(i + 1)],
   }))
 
   // Create read calls for all borrower orders
   const borrowOrderCalls = Array.from({ length: borrowOrderCount }, (_, i) => ({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'getBorrowOrder' as const,
-    args: [BigInt(i)],
+    functionName: 'borrowOrders' as const,
+    args: [BigInt(i + 1)],
   }))
 
   // Create read calls for all loans
   const loanCalls = Array.from({ length: loanCount }, (_, i) => ({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'getLoan' as const,
-    args: [BigInt(i)],
+    functionName: 'loanPositions' as const,
+    args: [BigInt(i + 1)],
   }))
 
   const { data: lenderOrders, isLoading: isLoadingLenderOrders } = useReadContracts({
@@ -219,17 +227,26 @@ export function Dashboard() {
 
   // Filter active lender orders
   const activeLenderOrders = lenderOrders?.filter(
-    (result) => result.status === 'success' && (result.result as LenderOrder)?.isActive
+    (result) =>
+      result.status === 'success' &&
+      (result.result as LenderOrder)?.owner !== '0x0000000000000000000000000000000000000000' &&
+      (result.result as LenderOrder)?.remaining > ZERO
   ) || []
 
   // Filter active borrow orders
   const activeBorrowOrders = borrowOrders?.filter(
-    (result) => result.status === 'success' && (result.result as BorrowOrder)?.isActive
+    (result) =>
+      result.status === 'success' &&
+      (result.result as BorrowOrder)?.owner !== '0x0000000000000000000000000000000000000000' &&
+      (result.result as BorrowOrder)?.remaining > ZERO
   ) || []
 
   // Filter active loans (not repaid)
   const activeLoans = loans?.filter(
-    (result) => result.status === 'success' && !(result.result as Loan)?.isRepaid
+    (result) =>
+      result.status === 'success' &&
+      (result.result as LoanPosition)?.lender !== '0x0000000000000000000000000000000000000000' &&
+      (result.result as LoanPosition)?.principal > ZERO
   ) || []
 
   return (
@@ -283,17 +300,20 @@ export function Dashboard() {
             ) : lenderOrders && lenderOrders.length > 0 ? (
               lenderOrders.map((result, index) => {
                 if (result.status !== 'success') return null
+                const orderId = index + 1
                 const order = result.result as LenderOrder
+                const isActive = order.remaining > ZERO
+                const isMatched = order.amount > ZERO && order.remaining < order.amount
                 return (
                   <OrderCard
                     key={index}
                     type="lender"
-                    id={index}
-                    address={order.lender}
+                    id={orderId}
+                    address={order.owner}
                     amount={order.amount}
-                    rate={order.interestRate}
-                    isActive={order.isActive}
-                    isMatched={order.isMatched}
+                    rate={BigInt(order.minRateBps)}
+                    isActive={isActive}
+                    isMatched={isMatched}
                   />
                 )
               })
@@ -314,17 +334,20 @@ export function Dashboard() {
             ) : borrowOrders && borrowOrders.length > 0 ? (
               borrowOrders.map((result, index) => {
                 if (result.status !== 'success') return null
+                const orderId = index + 1
                 const order = result.result as BorrowOrder
+                const isActive = order.remaining > ZERO
+                const isMatched = order.amount > ZERO && order.remaining < order.amount
                 return (
                   <OrderCard
                     key={index}
                     type="borrower"
-                    id={index}
-                    address={order.borrower}
+                    id={orderId}
+                    address={order.owner}
                     amount={order.amount}
-                    rate={order.interestRate}
-                    isActive={order.isActive}
-                    isMatched={order.isMatched}
+                    rate={BigInt(order.maxRateBps)}
+                    isActive={isActive}
+                    isMatched={isMatched}
                   />
                 )
               })
@@ -345,8 +368,28 @@ export function Dashboard() {
             ) : loans && loans.length > 0 ? (
               loans.map((result, index) => {
                 if (result.status !== 'success') return null
-                const loan = result.result as Loan
-                return <LoanCard key={index} id={index} loan={loan} />
+                const loanId = index + 1
+                const pos = result.result as LoanPosition
+                const isRepaid =
+                  pos.lender === '0x0000000000000000000000000000000000000000' || pos.principal === ZERO
+
+                const elapsed = isRepaid
+                  ? ZERO
+                  : nowSeconds > BigInt(pos.startTime)
+                    ? nowSeconds - BigInt(pos.startTime)
+                    : ZERO
+                const interest = isRepaid
+                  ? ZERO
+                  : (pos.principal * BigInt(pos.rateBps) * elapsed) / (BPS_DENOM * YEAR_SECONDS)
+                const repaymentAmount = pos.principal + interest
+
+                const loan: Loan = {
+                  ...pos,
+                  repaymentAmount,
+                  isRepaid,
+                }
+
+                return <LoanCard key={index} id={loanId} loan={loan} />
               })
             ) : (
               <Empty

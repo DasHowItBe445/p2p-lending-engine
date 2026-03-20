@@ -91,12 +91,12 @@ export function useMatchOrders() {
   const { writeContract, data: hash, isPending, error } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
-  const matchOrders = async (lenderOrderId: string) => {
+  const matchOrders = async (maxItems: string) => {
     writeContract({
       address: P2P_LENDING_ADDRESS,
       abi: P2P_LENDING_ABI,
       functionName: 'matchOrders',
-      args: [BigInt(lenderOrderId)],
+      args: [BigInt(maxItems)],
     })
   }
 
@@ -160,28 +160,29 @@ export function useWithdraw() {
 
 // Hook for reading order counts
 export function useOrderCounts() {
-  const { data: lenderOrderCount } = useReadContract({
+  const { data: nextLenderOrderId } = useReadContract({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'lenderOrderCount',
+    functionName: 'nextLenderOrderId',
   })
 
-  const { data: borrowOrderCount } = useReadContract({
+  const { data: nextBorrowOrderId } = useReadContract({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'borrowOrderCount',
+    functionName: 'nextBorrowOrderId',
   })
 
-  const { data: loanCount } = useReadContract({
+  const { data: nextLoanId } = useReadContract({
     address: P2P_LENDING_ADDRESS,
     abi: P2P_LENDING_ABI,
-    functionName: 'loanCount',
+    functionName: 'nextLoanId',
   })
 
   return {
-    lenderOrderCount: lenderOrderCount ? Number(lenderOrderCount) : 0,
-    borrowOrderCount: borrowOrderCount ? Number(borrowOrderCount) : 0,
-    loanCount: loanCount ? Number(loanCount) : 0,
+    // nextId starts at 1, so the first valid id is 1 and "count" is nextId - 1
+    lenderOrderCount: nextLenderOrderId ? Math.max(0, Number(nextLenderOrderId) - 1) : 0,
+    borrowOrderCount: nextBorrowOrderId ? Math.max(0, Number(nextBorrowOrderId) - 1) : 0,
+    loanCount: nextLoanId ? Math.max(0, Number(nextLoanId) - 1) : 0,
   }
 }
 

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount, useReadContract } from 'wagmi'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,13 +9,14 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { useMatchOrders, useRepayLoan, useWithdraw, useApproveTokens, useTokenAllowance } from '@/hooks/use-lending-contract'
+import { P2P_LENDING_ADDRESS, P2P_LENDING_ABI } from '@/lib/contracts'
 import { ArrowLeftRight, CreditCard, Wallet, ExternalLink, CheckCircle } from 'lucide-react'
+import { formatUnits } from 'viem'
 
 export function ActionsPanel() {
   const { isConnected } = useAccount()
-  const [lenderOrderId, setLenderOrderId] = useState('')
+  const [maxItems, setMaxItems] = useState('1')
   const [loanId, setLoanId] = useState('')
-  const [repayAmount, setRepayAmount] = useState('')
 
   // Hooks
   const { matchOrders, hash: matchHash, isPending: isMatching, isConfirming: isMatchConfirming, isSuccess: isMatchSuccess, error: matchError } = useMatchOrders()
@@ -24,8 +25,46 @@ export function ActionsPanel() {
   const { approve, hash: approveHash, isPending: isApproving, isConfirming: isApproveConfirming, isSuccess: isApproveSuccess } = useApproveTokens()
   const { allowance, refetch: refetchAllowance } = useTokenAllowance()
 
-  const parsedRepayAmount = repayAmount ? BigInt(Math.floor(parseFloat(repayAmount) * 1e18)) : BigInt(0)
-  const hasAllowance = allowance >= parsedRepayAmount && parsedRepayAmount > 0
+  const YEAR_SECONDS = BigInt(365) * BigInt(24) * BigInt(60) * BigInt(60)
+  const BPS_DENOM = BigInt(10_000)
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+  const ZERO = BigInt(0)
+
+  const { data: loanPos } = useReadContract({
+    address: P2P_LENDING_ADDRESS,
+    abi: P2P_LENDING_ABI,
+    functionName: 'loanPositions',
+    args: loanId ? [BigInt(loanId)] : undefined,
+    query: {
+      enabled: !!loanId,
+    },
+  })
+
+  const pos = loanPos as
+    | {
+        lender: string
+        borrower: string
+        principal: bigint
+        rateBps: number
+        startTime: number
+      }
+    | undefined
+
+  const isLoanActive =
+    !!pos && pos.lender !== '0x0000000000000000000000000000000000000000' && pos.principal > ZERO
+
+  const elapsed = isLoanActive
+    ? nowSeconds > BigInt(pos!.startTime)
+      ? nowSeconds - BigInt(pos!.startTime)
+      : ZERO
+    : ZERO
+  const interest = isLoanActive
+    ? (pos!.principal * BigInt(pos!.rateBps) * elapsed) / (BPS_DENOM * YEAR_SECONDS)
+    : ZERO
+  const totalOwed = isLoanActive ? pos!.principal + interest : ZERO
+
+  const totalOwedHuman = totalOwed > ZERO ? formatUnits(totalOwed, 18) : ''
+  const hasAllowance = allowance >= totalOwed && totalOwed > ZERO
 
   // Success handlers
   useEffect(() => {
@@ -33,7 +72,7 @@ export function ActionsPanel() {
       toast.success('Orders matched successfully!', {
         description: matchHash ? `Transaction: ${matchHash.slice(0, 10)}...` : undefined,
       })
-      setLenderOrderId('')
+      setMaxItems('1')
     }
   }, [isMatchSuccess, matchHash])
 
@@ -43,7 +82,6 @@ export function ActionsPanel() {
         description: repayHash ? `Transaction: ${repayHash.slice(0, 10)}...` : undefined,
       })
       setLoanId('')
-      setRepayAmount('')
     }
   }, [isRepaySuccess, repayHash])
 
@@ -78,19 +116,19 @@ export function ActionsPanel() {
   }, [withdrawError])
 
   const handleMatch = async () => {
-    if (!lenderOrderId) {
-      toast.error('Please enter a lender order ID')
+    if (!maxItems) {
+      toast.error('Please enter max items')
       return
     }
-    await matchOrders(lenderOrderId)
+    await matchOrders(maxItems)
   }
 
   const handleApproveRepay = async () => {
-    if (!repayAmount) {
-      toast.error('Please enter an amount')
+    if (!totalOwedHuman) {
+      toast.error('Enter a valid loan ID')
       return
     }
-    await approve(repayAmount)
+    await approve(totalOwedHuman)
   }
 
   const handleRepay = async () => {
@@ -124,12 +162,12 @@ export function ActionsPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Field>
-            <FieldLabel className="text-muted-foreground">Lender Order ID</FieldLabel>
+            <FieldLabel className="text-muted-foreground">Max Items</FieldLabel>
             <Input
               type="number"
-              placeholder="0"
-              value={lenderOrderId}
-              onChange={(e) => setLenderOrderId(e.target.value)}
+              placeholder="1"
+              value={maxItems}
+              onChange={(e) => setMaxItems(e.target.value)}
               className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
               disabled={!isConnected}
             />
@@ -137,7 +175,7 @@ export function ActionsPanel() {
           <Button
             className="w-full bg-accent text-accent-foreground hover:bg-accent/90"
             onClick={handleMatch}
-            disabled={!isConnected || isMatching || isMatchConfirming || !lenderOrderId}
+            disabled={!isConnected || isMatching || isMatchConfirming || !maxItems}
           >
             {isMatching || isMatchConfirming ? (
               <>
@@ -177,24 +215,25 @@ export function ActionsPanel() {
                 disabled={!isConnected}
               />
             </Field>
-            <Field>
-              <FieldLabel className="text-muted-foreground">Repayment Amount</FieldLabel>
-              <Input
-                type="number"
-                placeholder="0.00"
-                value={repayAmount}
-                onChange={(e) => setRepayAmount(e.target.value)}
-                className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
-                disabled={!isConnected}
-              />
-            </Field>
           </FieldGroup>
+
+          {isLoanActive && (
+            <div className="rounded-lg border border-border bg-secondary/20 p-3">
+              <p className="text-xs text-muted-foreground">Total due (principal + interest)</p>
+              <p className="mt-1 text-sm font-medium text-foreground">
+                {Number(formatUnits(totalOwed, 18)).toLocaleString(undefined, {
+                  maximumFractionDigits: 4,
+                })}{' '}
+                TOKEN
+              </p>
+            </div>
+          )}
           <div className="flex flex-col gap-3">
             <Button
               variant="outline"
               className="w-full border-border bg-secondary text-foreground hover:bg-secondary/80"
               onClick={handleApproveRepay}
-              disabled={!isConnected || isApproving || isApproveConfirming || !repayAmount}
+              disabled={!isConnected || isApproving || isApproveConfirming || !totalOwedHuman}
             >
               {isApproving || isApproveConfirming ? (
                 <>

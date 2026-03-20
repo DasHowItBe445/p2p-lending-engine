@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useAccount } from 'wagmi'
+import { parseUnits } from 'viem'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,8 +21,13 @@ export function BorrowerPanel() {
   const { placeBorrowOrder, hash: orderHash, isPending: isPlacing, isConfirming: isOrderConfirming, isSuccess: isOrderSuccess, error: orderError } = usePlaceBorrowOrder()
   const { allowance, refetch: refetchAllowance } = useTokenAllowance()
 
-  const parsedAmount = amount ? BigInt(Math.floor(parseFloat(amount) * 1e18)) : BigInt(0)
-  const hasAllowance = allowance >= parsedAmount && parsedAmount > 0
+  let parsedAmount = BigInt(0)
+  try {
+    if (amount) parsedAmount = parseUnits(amount, 18)
+  } catch {
+    parsedAmount = BigInt(0)
+  }
+  const hasAllowance = allowance >= parsedAmount && parsedAmount > BigInt(0)
 
   useEffect(() => {
     if (isApproveSuccess) {
