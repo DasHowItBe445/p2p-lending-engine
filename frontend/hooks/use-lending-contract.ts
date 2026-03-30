@@ -14,13 +14,15 @@ export function useApproveTokens() {
   const { writeContract, data: hash, isPending, error } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
-  const approve = async (amount: string) => {
-    const parsedAmount = parseUnits(amount, 18)
+  const approve = async () => {
     writeContract({
       address: MOCK_ERC20_ADDRESS,
       abi: ERC20_ABI,
       functionName: 'approve',
-      args: [P2P_LENDING_ADDRESS, parsedAmount],
+      args: [
+        P2P_LENDING_ADDRESS,
+        BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+      ],
     })
   }
 
@@ -42,12 +44,21 @@ export function usePlaceLenderOrder() {
   const placeLenderOrder = async (amount: string, interestRate: string) => {
     const parsedAmount = parseUnits(amount, 18)
     const parsedRate = BigInt(Math.floor(parseFloat(interestRate) * 100)) // Convert to basis points
-    writeContract({
-      address: P2P_LENDING_ADDRESS,
-      abi: P2P_LENDING_ABI,
-      functionName: 'placeLenderOrder',
-      args: [parsedAmount, parsedRate],
-    })
+    try {
+      console.log("LENDER ORDER DEBUG")
+      console.log("Amount:", parsedAmount.toString())
+      console.log("Rate:", parsedRate.toString())
+      console.log("Contract:", P2P_LENDING_ADDRESS)
+    
+      writeContract({
+        address: P2P_LENDING_ADDRESS,
+        abi: P2P_LENDING_ABI,
+        functionName: 'placeLenderOrder',
+        args: [parsedAmount, parsedRate],
+      })
+    } catch (err) {
+      console.error("Lender error:", err)
+    }
   }
 
   return {

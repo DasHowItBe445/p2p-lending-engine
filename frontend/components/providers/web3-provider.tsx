@@ -21,6 +21,8 @@ function LoadingScreen() {
 export function Web3Provider({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false)
 
+  const [queryClient] = useState(() => new QueryClient())
+
   useEffect(() => {
     setMounted(true)
   }, [])

@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect } from 'react'
 import { useReadContracts } from 'wagmi'
 import { formatUnits } from 'viem'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -202,21 +203,25 @@ export function Dashboard() {
     args: [BigInt(i + 1)],
   }))
 
-  const { data: lenderOrders, isLoading: isLoadingLenderOrders } = useReadContracts({
+  const { 
+    data: lenderOrders, 
+    isLoading: isLoadingLenderOrders,
+    refetch: refetchLenderOrders
+  } = useReadContracts({
     contracts: lenderOrderCalls,
     query: {
       enabled: lenderOrderCount > 0,
     },
   })
 
-  const { data: borrowOrders, isLoading: isLoadingBorrowOrders } = useReadContracts({
+  const { data: borrowOrders, isLoading: isLoadingBorrowOrders, refetch: refetchBorrowOrders } = useReadContracts({
     contracts: borrowOrderCalls,
     query: {
       enabled: borrowOrderCount > 0,
     },
   })
 
-  const { data: loans, isLoading: isLoadingLoans } = useReadContracts({
+  const { data: loans, isLoading: isLoadingLoans, refetch: refetchLoans } = useReadContracts({
     contracts: loanCalls,
     query: {
       enabled: loanCount > 0,
@@ -248,6 +253,16 @@ export function Dashboard() {
       (result.result as LoanPosition)?.lender !== '0x0000000000000000000000000000000000000000' &&
       (result.result as LoanPosition)?.principal > ZERO
   ) || []
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetchLenderOrders()
+      refetchBorrowOrders()
+      refetchLoans()
+    }, 3000)
+  
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <Card className="border-border bg-card">

@@ -27,7 +27,7 @@ export function LenderPanel() {
   } catch {
     parsedAmount = BigInt(0)
   }
-  const hasAllowance = allowance >= parsedAmount && parsedAmount > BigInt(0)
+  const hasAllowance = allowance >= parsedAmount
 
   useEffect(() => {
     if (isApproveSuccess) {
@@ -77,7 +77,7 @@ export function LenderPanel() {
       toast.error('Please enter an amount')
       return
     }
-    await approve(amount)
+    await approve()
   }
 
   const handlePlaceOrder = async () => {
@@ -154,7 +154,12 @@ export function LenderPanel() {
           <Button
             className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
             onClick={handlePlaceOrder}
-            disabled={!isConnected || isPlacing || isOrderConfirming || !hasAllowance}
+            disabled={
+              !isConnected ||
+              isPlacing ||
+              isOrderConfirming ||
+              !hasAllowance
+            }
           >
             {isPlacing || isOrderConfirming ? (
               <>
