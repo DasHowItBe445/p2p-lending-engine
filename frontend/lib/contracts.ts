@@ -76,6 +76,8 @@ export const P2P_LENDING_ABI = [
     inputs: [
       { name: 'amount', type: 'uint256' },
       { name: 'minRateBps', type: 'uint256' },
+      { name: 'minSharesOut', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
     ],
     outputs: [],
   },
@@ -87,6 +89,8 @@ export const P2P_LENDING_ABI = [
     inputs: [
       { name: 'amount', type: 'uint256' },
       { name: 'maxRateBps', type: 'uint256' },
+      { name: 'minAmountOut', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
     ],
     outputs: [],
   },

@@ -15,6 +15,8 @@ contract P2PLending is ReentrancyGuard {
     uint256 private constant SHARES_SCALE = 1e18;
     uint256 private constant YEAR = 365 days;
 
+    uint256 public constant FEE_BPS = 30;
+
     uint256 public nextLenderOrderId = 1;
     uint256 public nextBorrowOrderId = 1;
     uint256 public nextLoanId = 1;
@@ -153,7 +155,9 @@ contract P2PLending is ReentrancyGuard {
         }
     }
 
-    function placeLenderOrder(uint256 amount, uint256 minRateBps) external nonReentrant {
+    function placeLenderOrder(uint256 amount, uint256 minRateBps, uint256 minSharesOut, uint256 deadline) external nonReentrant {
+        
+        if (block.timestamp > deadline) revert("expired");
         if (amount == 0) revert InvalidAmount();
         if (minRateBps > 10_000) revert InvalidRate();
 
@@ -161,6 +165,7 @@ contract P2PLending is ReentrancyGuard {
         asset.safeTransferFrom(msg.sender, address(this), amount);
 
         uint256 shares = _assetsToShares(amount);
+        if (shares < minSharesOut) revert("slippage");
         totalShares += shares;
         lenderOrderShares[id] = shares;
 
@@ -179,7 +184,10 @@ contract P2PLending is ReentrancyGuard {
         emit LenderOrderPlaced(id, msg.sender, amount, minRateBps);
     }
 
-    function placeBorrowOrder(uint256 amount, uint256 maxRateBps) external nonReentrant {
+    function placeBorrowOrder(uint256 amount, uint256 maxRateBps, uint256 minAmountOut, uint256 deadline) external nonReentrant {
+        if (block.timestamp > deadline) revert("expired");
+        if (amount < minAmountOut) revert("slippage");
+
         if (amount == 0) revert InvalidAmount();
         if (maxRateBps > 10_000) revert InvalidRate();
 
@@ -215,6 +223,10 @@ contract P2PLending is ReentrancyGuard {
             if (lo.minRateBps > bo.maxRateBps) break;
 
             uint256 fill = lo.remaining < bo.remaining ? lo.remaining : bo.remaining;
+
+            uint256 fee = (fill * FEE_BPS) / 10_000;
+            uint256 amountAfterFee = fill - fee;
+
             uint32 rateBps = lo.minRateBps;
 
             uint256 sharesToBurn = _assetsToSharesUp(fill);
@@ -223,7 +235,7 @@ contract P2PLending is ReentrancyGuard {
             lenderOrderShares[lid] = orderShares - sharesToBurn;
             totalShares -= sharesToBurn;
 
-            aaveConnector.withdraw(fill, bo.owner);
+            aaveConnector.withdraw(amountAfterFee, bo.owner);
 
             lo.remaining -= uint128(fill);
             bo.remaining -= uint128(fill);

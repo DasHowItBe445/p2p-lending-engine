@@ -49,12 +49,16 @@ export function usePlaceLenderOrder() {
       console.log("Amount:", parsedAmount.toString())
       console.log("Rate:", parsedRate.toString())
       console.log("Contract:", P2P_LENDING_ADDRESS)
+
+      const minSharesOut = BigInt(0)
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 600)
     
       writeContract({
         address: P2P_LENDING_ADDRESS,
         abi: P2P_LENDING_ABI,
         functionName: 'placeLenderOrder',
-        args: [parsedAmount, parsedRate],
+
+        args: [parsedAmount, parsedRate, minSharesOut, deadline],
       })
     } catch (err) {
       console.error("Lender error:", err)
@@ -79,11 +83,14 @@ export function usePlaceBorrowOrder() {
   const placeBorrowOrder = async (amount: string, interestRate: string) => {
     const parsedAmount = parseUnits(amount, 18)
     const parsedRate = BigInt(Math.floor(parseFloat(interestRate) * 100)) // Convert to basis points
+    const minAmountOut = (parsedAmount * BigInt(95)) / BigInt(100) // allow 5% slippage
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 600)
+
     writeContract({
       address: P2P_LENDING_ADDRESS,
       abi: P2P_LENDING_ABI,
       functionName: 'placeBorrowOrder',
-      args: [parsedAmount, parsedRate],
+      args: [parsedAmount, parsedRate, minAmountOut, deadline],
     })
   }
 
