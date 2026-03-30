@@ -6,6 +6,7 @@ import "./AaveConnector.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./LPToken.sol";
 
 contract P2PLending is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -21,12 +22,13 @@ contract P2PLending is ReentrancyGuard {
     uint256 public nextBorrowOrderId = 1;
     uint256 public nextLoanId = 1;
 
+    LPToken public lpToken;
+
     mapping(uint256 => OrderTypes.LenderOrder) public lenderOrders;
     mapping(uint256 => OrderTypes.BorrowOrder) public borrowOrders;
     mapping(uint256 => OrderTypes.LoanPosition) public loanPositions;
 
     uint256 public totalShares;
-    mapping(uint256 => uint256) public lenderOrderShares;
 
     uint256 public lenderBucketBitset;
     mapping(uint256 => uint256) public lenderHeadOrderId;
@@ -38,14 +40,11 @@ contract P2PLending is ReentrancyGuard {
     mapping(uint256 => uint256) public borrowTailOrderId;
     mapping(uint256 => uint256) public borrowNextInBucket;
 
-    mapping(address => uint256) public lenderWithdrawable;
-
     event LenderOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 minRateBps);
     event BorrowOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 maxRateBps);
     event Matched(uint256 indexed lenderOrderId, uint256 indexed borrowOrderId, uint256 rateBps, uint256 amount, uint256 loanId);
     event LenderOrderCancelled(uint256 indexed orderId, uint256 refundedAmount);
     event LoanRepaid(uint256 indexed loanId, uint256 totalPaid, uint256 interestPaid);
-    event Withdrawn(address indexed user, uint256 amount);
 
     error InvalidAmount();
     error InvalidRate();
@@ -56,6 +55,7 @@ contract P2PLending is ReentrancyGuard {
     constructor(address asset_, address aaveConnector_) {
         asset = IERC20(asset_);
         aaveConnector = AaveConnector(payable(aaveConnector_));
+        lpToken = new LPToken();
     }
 
     function _totalAssets() internal view returns (uint256) {
@@ -68,14 +68,6 @@ contract P2PLending is ReentrancyGuard {
         uint256 ta = _totalAssets();
         if (ta == 0) return assets * SHARES_SCALE;
         return (assets * ts) / ta;
-    }
-
-    function _assetsToSharesUp(uint256 assets) internal view returns (uint256) {
-        uint256 ts = totalShares;
-        if (ts == 0) return assets * SHARES_SCALE;
-        uint256 ta = _totalAssets();
-        if (ta == 0) return assets * SHARES_SCALE;
-        return (assets * ts + (ta - 1)) / ta;
     }
 
     function _sharesToAssets(uint256 shares) internal view returns (uint256) {
@@ -166,8 +158,8 @@ contract P2PLending is ReentrancyGuard {
 
         uint256 shares = _assetsToShares(amount);
         if (shares < minSharesOut) revert("slippage");
+        lpToken.mint(msg.sender, shares);
         totalShares += shares;
-        lenderOrderShares[id] = shares;
 
         asset.safeIncreaseAllowance(address(aaveConnector), amount);
         aaveConnector.deposit(amount);
@@ -229,12 +221,6 @@ contract P2PLending is ReentrancyGuard {
 
             uint32 rateBps = lo.minRateBps;
 
-            uint256 sharesToBurn = _assetsToSharesUp(fill);
-            uint256 orderShares = lenderOrderShares[lid];
-            if (sharesToBurn > orderShares) sharesToBurn = orderShares;
-            lenderOrderShares[lid] = orderShares - sharesToBurn;
-            totalShares -= sharesToBurn;
-
             aaveConnector.withdraw(amountAfterFee, bo.owner);
 
             lo.remaining -= uint128(fill);
@@ -273,6 +259,7 @@ contract P2PLending is ReentrancyGuard {
 
     function cancelLenderOrder(uint256 orderId) external nonReentrant {
         OrderTypes.LenderOrder storage o = lenderOrders[orderId];
+
         if (o.owner != msg.sender) revert Unauthorized();
         if (o.remaining == 0) revert InvalidAmount();
 
@@ -282,20 +269,9 @@ contract P2PLending is ReentrancyGuard {
         _removeLenderFromQueue(orderId, bucket);
         delete lenderOrders[orderId];
 
-        uint256 shares = lenderOrderShares[orderId];
-        uint256 ts = totalShares;
-        uint256 ta = _totalAssets();
-        uint256 assetsOut = ts == 0 ? 0 : (shares * ta) / ts;
+        aaveConnector.withdraw(remaining, msg.sender);
 
-        delete lenderOrderShares[orderId];
-        totalShares = ts - shares;
-
-        // Safety: always withdraw at least principal remaining
-        if (assetsOut < remaining) assetsOut = remaining;
-
-        aaveConnector.withdraw(assetsOut, msg.sender);
-
-        emit LenderOrderCancelled(orderId, assetsOut);
+        emit LenderOrderCancelled(orderId, remaining);
     }
 
     function _removeLenderFromQueue(uint256 orderId, uint256 bucket) internal {
@@ -349,23 +325,13 @@ contract P2PLending is ReentrancyGuard {
         uint256 interest = (principal * uint256(pos.rateBps) * elapsed) / (10_000 * YEAR);
         uint256 totalOwed = principal + interest;
 
-        address lender = pos.lender;
         delete loanPositions[loanId];
 
         asset.safeTransferFrom(msg.sender, address(this), totalOwed);
-        lenderWithdrawable[lender] += totalOwed;
+        asset.safeIncreaseAllowance(address(aaveConnector), totalOwed);
+        aaveConnector.deposit(totalOwed);
 
         emit LoanRepaid(loanId, totalOwed, interest);
-    }
-
-    function withdraw() external nonReentrant {
-        uint256 amount = lenderWithdrawable[msg.sender];
-        if (amount == 0) revert InvalidAmount();
-
-        lenderWithdrawable[msg.sender] = 0;
-        asset.safeTransfer(msg.sender, amount);
-
-        emit Withdrawn(msg.sender, amount);
     }
 
     function _lsb(uint256 x) internal pure returns (uint256) {
@@ -398,15 +364,6 @@ contract P2PLending is ReentrancyGuard {
         return _sharesToAssets(shares);
     }
 
-    function previewCancel(uint256 orderId) external view returns (uint256) {
-        uint256 shares = lenderOrderShares[orderId];
-        uint256 ts = totalShares;
-        if (ts == 0) return 0;
-
-        uint256 ta = _totalAssets();
-        return (shares * ta) / ts;
-    }
-
     function previewInterest(uint256 loanId) external view returns (uint256) {
         OrderTypes.LoanPosition storage pos = loanPositions[loanId];
         if (pos.borrower == address(0)) return 0;
@@ -414,5 +371,21 @@ contract P2PLending is ReentrancyGuard {
         uint256 elapsed = block.timestamp - uint256(pos.startTime);
 
         return (uint256(pos.principal) * pos.rateBps * elapsed) / (10_000 * YEAR);
+    }
+    function removeLiquidity(uint256 shares) external nonReentrant {
+        require(shares > 0, "invalid");
+        require(lpToken.balanceOf(msg.sender) >= shares, "not enough LP");
+
+        uint256 assets = _sharesToAssets(shares);
+
+        lpToken.burn(msg.sender, shares);
+        totalShares -= shares;
+
+        aaveConnector.withdraw(assets, msg.sender);
+    }
+
+    function getLPPrice() external view returns (uint256) {
+        if (totalShares == 0) return 0;
+        return (_totalAssets() * 1e18) / totalShares;
     }
 }
