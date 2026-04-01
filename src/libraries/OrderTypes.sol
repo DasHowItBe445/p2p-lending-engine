@@ -10,19 +10,20 @@ library OrderTypes {
     uint256 public constant MAX_BUCKET_INDEX = 255; // 255 * 25 = 6375 bps max
 
     struct LenderOrder {
-        address owner;
-        uint128 amount;
-        uint32 minRateBps;
-        uint32 createdAt;
-        uint128 remaining;
+        address owner;        
+        uint128 amount;       
+        uint128 remaining;    
+        uint32 minRateBps;    
+        uint32 createdAt;     
     }
 
     struct BorrowOrder {
         address owner;
         uint128 amount;
+        uint128 remaining;
         uint32 maxRateBps;
         uint32 createdAt;
-        uint128 remaining;
+        uint128 minAmountOut;
     }
 
     struct LoanPosition {

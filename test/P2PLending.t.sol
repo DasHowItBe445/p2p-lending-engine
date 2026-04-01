@@ -58,7 +58,7 @@ contract P2PLendingTest is Test {
         p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
-        (address owner, uint128 amount, uint32 minRateBps,, uint128 remaining) = p2p.lenderOrders(1);
+        (address owner, uint128 amount, uint128 remaining, uint32 minRateBps,) = p2p.lenderOrders(1);
         assertEq(owner, alice);
         assertEq(amount, LEND_AMOUNT);
         assertEq(minRateBps, RATE_BPS);
@@ -73,7 +73,7 @@ contract P2PLendingTest is Test {
         emit BorrowOrderPlaced(1, bob, BORROW_AMOUNT, RATE_BPS);
         p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
-        (address owner, uint128 amount, uint32 maxRateBps,, uint128 remaining) = p2p.borrowOrders(1);
+        (address owner, uint128 amount, uint128 remaining, uint32 maxRateBps,) = p2p.borrowOrders(1);
         assertEq(owner, bob);
         assertEq(amount, BORROW_AMOUNT);
         assertEq(maxRateBps, RATE_BPS);
@@ -99,8 +99,8 @@ contract P2PLendingTest is Test {
         assertEq(lender, alice);
         assertEq(principal, BORROW_AMOUNT);
         assertEq(rateBps, RATE_BPS);
-        (, , , , uint128 lenderRemaining) = p2p.lenderOrders(1);
-        (, , , , uint128 borrowRemaining) = p2p.borrowOrders(1);
+        (, , uint128 lenderRemaining, ,) = p2p.lenderOrders(1);
+        (, , uint128 borrowRemaining, ,) = p2p.borrowOrders(1);
         assertEq(lenderRemaining, LEND_AMOUNT - BORROW_AMOUNT);
         assertEq(borrowRemaining, 0);
     }
@@ -118,8 +118,8 @@ contract P2PLendingTest is Test {
         p2p.matchOrders(1);
 
         // Lender 1: 1000 total, 1000 filled → remaining 0. Borrower: 2000 requested, 1000 filled → remaining 1000.
-        (, , , , uint128 lenderRemaining) = p2p.lenderOrders(1);
-        (, , , , uint128 borrowRemaining) = p2p.borrowOrders(1);
+        (, , uint128 lenderRemaining, ,) = p2p.lenderOrders(1);
+        (, , uint128 borrowRemaining, ,) = p2p.borrowOrders(1);
         assertEq(lenderRemaining, 0);
         assertEq(borrowRemaining, borrowMore - LEND_AMOUNT);
         uint256 expected = LEND_AMOUNT - (LEND_AMOUNT * 30 / 10_000);

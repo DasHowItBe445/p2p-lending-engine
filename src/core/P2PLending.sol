@@ -25,7 +25,7 @@ contract P2PLending is ReentrancyGuard {
     LPToken public lpToken;
 
     mapping(uint256 => OrderTypes.LenderOrder) public lenderOrders;
-    mapping(uint256 => OrderTypes.BorrowOrder) public borrowOrders;
+    mapping(uint256 => OrderTypes.BorrowOrder) internal _borrowOrders;
     mapping(uint256 => OrderTypes.LoanPosition) public loanPositions;
     mapping(address => uint256) public lenderWithdrawable;
     mapping(uint256 => uint256) public lenderOrderShares;
@@ -69,7 +69,7 @@ contract P2PLending is ReentrancyGuard {
         if (ts == 0) return assets * SHARES_SCALE;
         uint256 ta = _totalAssets();
         if (ta == 0) return assets * SHARES_SCALE;
-        return (assets * ts) / ta;
+        return (assets * ts + ta - 1) / ta;
     }
 
     function _sharesToAssets(uint256 shares) internal view returns (uint256) {
@@ -120,7 +120,7 @@ contract P2PLending is ReentrancyGuard {
     }
 
     function _enqueueBorrow(uint256 orderId) internal {
-        OrderTypes.BorrowOrder storage o = borrowOrders[orderId];
+        OrderTypes.BorrowOrder storage o = _borrowOrders[orderId];
         uint256 bucket = _borrowBucket(o.maxRateBps);
 
         borrowBucketBitset |= (1 << bucket);
@@ -189,12 +189,13 @@ contract P2PLending is ReentrancyGuard {
 
         uint256 id = nextBorrowOrderId++;
 
-        borrowOrders[id] = OrderTypes.BorrowOrder({
+        _borrowOrders[id] = OrderTypes.BorrowOrder({
             owner: msg.sender,
             amount: uint128(amount),
             maxRateBps: uint32(maxRateBps),
             createdAt: uint32(block.timestamp),
-            remaining: uint128(amount)
+            remaining: uint128(amount),
+            minAmountOut: uint128(minAmountOut)
         });
 
         _enqueueBorrow(id);
@@ -205,11 +206,18 @@ contract P2PLending is ReentrancyGuard {
         uint256 ts = block.timestamp;
 
         for (uint256 i = 0; i < maxItems; i++) {
+            uint256 beforeLender = lenderBucketBitset;
+            uint256 beforeBorrow = borrowBucketBitset;
+
             _matchSingle(ts);
+
+            if (beforeLender == lenderBucketBitset && beforeBorrow == borrowBucketBitset) {
+                break;
+            }
         }
     }
 
-    function _matchSingle(uint256 ts) internal {
+    function _matchSingle(uint256 timestamp) internal {
         uint256 lenderBucket = _nextLenderBucket();
         uint256 borrowBucket = _nextBorrowBucket();
         if (lenderBucket == type(uint256).max || borrowBucket == type(uint256).max) return;
@@ -219,7 +227,7 @@ contract P2PLending is ReentrancyGuard {
         if (lid == 0 || bid == 0) return;
 
         OrderTypes.LenderOrder storage lo = lenderOrders[lid];
-        OrderTypes.BorrowOrder storage bo = borrowOrders[bid];
+        OrderTypes.BorrowOrder storage bo = _borrowOrders[bid];
 
         if (lo.minRateBps > bo.maxRateBps) return;
 
@@ -229,7 +237,13 @@ contract P2PLending is ReentrancyGuard {
 
         uint256 orderShares = lenderOrderShares[lid];
 
-        uint256 sharesToBurn = _assetsToShares(fill);
+        uint256 fee = (fill * FEE_BPS) / 10_000;
+      
+        uint256 amountOut = fill - fee;
+
+        if (amountOut < bo.minAmountOut) revert("slippage");
+
+        uint256 sharesToBurn = (orderShares * fill) / lo.amount;
         if (sharesToBurn > orderShares) sharesToBurn = orderShares;
 
         lenderOrderShares[lid] = orderShares - sharesToBurn;
@@ -237,13 +251,11 @@ contract P2PLending is ReentrancyGuard {
         lpToken.burn(lo.owner, sharesToBurn);
         totalShares -= sharesToBurn;
 
-        uint256 fee = (fill * FEE_BPS) / 10_000;
-        uint256 amountOut = fill - fee;
-
-        aaveConnector.withdraw(amountOut, bo.owner);
 
         lo.remaining -= uint128(fill);
         bo.remaining -= uint128(fill);
+        
+        aaveConnector.withdraw(amountOut, bo.owner);
 
         if (lo.remaining == 0) _dequeueLender(lenderBucket);
         if (bo.remaining == 0) _dequeueBorrow(borrowBucket);
@@ -254,7 +266,7 @@ contract P2PLending is ReentrancyGuard {
             borrower: bo.owner,
             principal: uint128(fill),
             rateBps: rateBps,
-            startTime: uint32(ts)
+            startTime: uint32(timestamp)
         });
 
         emit Matched(lid, bid, rateBps, fill, loanId);
@@ -272,8 +284,8 @@ contract P2PLending is ReentrancyGuard {
         uint256 bits = borrowBucketBitset;
         if (bits == 0) return type(uint256).max;
 
-        uint256 lsb = _lsb(bits);
-        return _bitIndex(lsb);
+        uint256 msb = 1 << _msb(bits);
+        return _bitIndex(msb);
     }
 
     function cancelLenderOrder(uint256 orderId) external nonReentrant {
@@ -438,5 +450,52 @@ contract P2PLending is ReentrancyGuard {
 
     function getFeeBps() external pure returns (uint256) {
         return FEE_BPS;
+    }
+
+    function previewFee(uint256 amount) external pure returns (uint256) {
+        return (amount * FEE_BPS) / 10_000;
+    }
+
+    function borrowOrders(uint256 id)
+        external
+        view
+        returns (
+            address owner,
+            uint128 amount,
+            uint128 remaining,
+            uint32 maxRateBps,
+            uint32 createdAt
+        )
+    {
+        OrderTypes.BorrowOrder storage o = _borrowOrders[id];
+        return (o.owner, o.amount, o.remaining, o.maxRateBps, o.createdAt);
+    }
+
+    function getUtilization() external view returns (uint256) {
+        uint256 total = _totalAssets();
+        if (total == 0) return 0;
+
+        uint256 idle = aaveConnector.totalAssets();
+        return ((total - idle) * 1e18) / total;
+    }
+
+    function previewMatch(uint256 lenderId, uint256 borrowId)
+        external
+        view
+        returns (uint256 fill, uint256 fee, uint256 amountOut)
+    {
+        OrderTypes.LenderOrder storage lo = lenderOrders[lenderId];
+        OrderTypes.BorrowOrder storage bo = _borrowOrders[borrowId];
+
+        if (lo.minRateBps > bo.maxRateBps) return (0, 0, 0);
+
+        fill = lo.remaining < bo.remaining ? lo.remaining : bo.remaining;
+
+        fee = (fill * FEE_BPS) / 10_000;
+        amountOut = fill - fee;
+    }
+
+    function getTotalAssets() external view returns (uint256) {
+        return _totalAssets();
     }
 }
