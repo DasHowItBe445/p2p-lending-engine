@@ -21,6 +21,10 @@ contract P2PLendingTest is Test {
     uint256 constant BORROW_AMOUNT = 500 * 1e6;
     uint256 constant RATE_BPS = 500; // 5%
 
+    uint256 constant DEADLINE = type(uint256).max;
+    uint256 constant MIN_SHARES_OUT = 0;
+    uint256 constant MIN_AMOUNT_OUT = 0;
+
     // Same signatures as P2PLending for expectEmit
     event LenderOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 minRateBps);
     event BorrowOrderPlaced(uint256 indexed orderId, address indexed owner, uint256 amount, uint256 maxRateBps);
@@ -51,7 +55,7 @@ contract P2PLendingTest is Test {
         asset.approve(address(p2p), LEND_AMOUNT);
         vm.expectEmit(true, true, true, true);
         emit LenderOrderPlaced(1, alice, LEND_AMOUNT, RATE_BPS);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         (address owner, uint128 amount, uint32 minRateBps,, uint128 remaining) = p2p.lenderOrders(1);
@@ -67,7 +71,7 @@ contract P2PLendingTest is Test {
         vm.prank(bob);
         vm.expectEmit(true, true, true, true);
         emit BorrowOrderPlaced(1, bob, BORROW_AMOUNT, RATE_BPS);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         (address owner, uint128 amount, uint32 maxRateBps,, uint128 remaining) = p2p.borrowOrders(1);
         assertEq(owner, bob);
@@ -79,17 +83,18 @@ contract P2PLendingTest is Test {
     function test_MatchOrders_FullMatch() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         vm.expectEmit(true, true, true, true);
         emit Matched(1, 1, RATE_BPS, BORROW_AMOUNT, 1);
         p2p.matchOrders(1);
 
-        assertEq(asset.balanceOf(bob), INITIAL_BALANCE + BORROW_AMOUNT);
+        uint256 expected = BORROW_AMOUNT - (BORROW_AMOUNT * 30 / 10_000);
+        assertEq(asset.balanceOf(bob), INITIAL_BALANCE + expected);
         (address lender,, uint128 principal, uint32 rateBps,) = p2p.loanPositions(1);
         assertEq(lender, alice);
         assertEq(principal, BORROW_AMOUNT);
@@ -104,11 +109,11 @@ contract P2PLendingTest is Test {
         uint256 borrowMore = 2_000 * 1e6;
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(borrowMore, RATE_BPS);
+        p2p.placeBorrowOrder(borrowMore, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         p2p.matchOrders(1);
 
@@ -117,13 +122,14 @@ contract P2PLendingTest is Test {
         (, , , , uint128 borrowRemaining) = p2p.borrowOrders(1);
         assertEq(lenderRemaining, 0);
         assertEq(borrowRemaining, borrowMore - LEND_AMOUNT);
-        assertEq(asset.balanceOf(bob), INITIAL_BALANCE + LEND_AMOUNT);
+        uint256 expected = LEND_AMOUNT - (LEND_AMOUNT * 30 / 10_000);
+        assertEq(asset.balanceOf(bob), INITIAL_BALANCE + expected);
     }
 
     function test_CancelLenderOrder() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         uint256 aliceBefore = asset.balanceOf(alice);
 
         // accrue yield in mock Aave
@@ -141,10 +147,10 @@ contract P2PLendingTest is Test {
     function test_RepayAndWithdraw() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
         p2p.matchOrders(1);
 
         vm.warp(block.timestamp + 30 days);
@@ -154,7 +160,7 @@ contract P2PLendingTest is Test {
         p2p.repay(1);
         vm.stopPrank();
 
-        uint256 withdrawable = p2p.lenderWithdrawable(alice);
+        uint256 withdrawable = p2p.getWithdrawable(alice);
         assertGt(withdrawable, BORROW_AMOUNT); 
 
         vm.prank(alice);
@@ -163,14 +169,14 @@ contract P2PLendingTest is Test {
             asset.balanceOf(alice),
             INITIAL_BALANCE - LEND_AMOUNT + BORROW_AMOUNT
         );
-        assertEq(p2p.lenderWithdrawable(alice), 0);
+        assertEq(p2p.getWithdrawable(alice), 0);
     }
-
+    
     function test_Revert_PlaceLenderOrder_ZeroAmount() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
         vm.expectRevert(P2PLending.InvalidAmount.selector);
-        p2p.placeLenderOrder(0, RATE_BPS);
+        p2p.placeLenderOrder(0, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
     }
 
@@ -178,14 +184,14 @@ contract P2PLendingTest is Test {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
         vm.expectRevert(P2PLending.InvalidRate.selector);
-        p2p.placeLenderOrder(LEND_AMOUNT, 10001);
+        p2p.placeLenderOrder(LEND_AMOUNT, 10001, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
     }
 
     function test_Revert_Cancel_Unauthorized() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
         vm.prank(bob);
         vm.expectRevert(P2PLending.Unauthorized.selector);
@@ -195,10 +201,10 @@ contract P2PLendingTest is Test {
     function test_NoMatch_WhenRatesIncompatible() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, 800); // min 8%
-        vm.stopPrank();
+        p2p.placeLenderOrder(LEND_AMOUNT, 800, MIN_SHARES_OUT, DEADLINE); // min 8%
+        vm.stopPrank(); 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, 500); // max 5%
+        p2p.placeBorrowOrder(BORROW_AMOUNT, 500, MIN_AMOUNT_OUT, DEADLINE); // max 5%
 
         p2p.matchOrders(1);
 
@@ -210,7 +216,7 @@ contract P2PLendingTest is Test {
     function test_YieldAccruesInAave() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         uint256 before = pool.balanceOf(address(asset), address(connector));
@@ -225,11 +231,11 @@ contract P2PLendingTest is Test {
     function test_PartialMatch_AaveBalanceReducedCorrectly() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         uint256 before = pool.balanceOf(address(asset), address(connector));
 
@@ -237,19 +243,20 @@ contract P2PLendingTest is Test {
 
         uint256 afterBal = pool.balanceOf(address(asset), address(connector));
 
-        assertEq(before - afterBal, BORROW_AMOUNT); // only matched amount withdrawn
+        uint256 expected = BORROW_AMOUNT - (BORROW_AMOUNT * 30 / 10_000);
+        assertEq(before - afterBal, expected);
     }
 
     function test_FullFlow_DepositMatchRepayWithdraw() public {
         // Deposit
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         // Borrow
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         // Match
         p2p.matchOrders(1);
@@ -274,7 +281,7 @@ contract P2PLendingTest is Test {
         // Alice deposits first
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         // Time passes → Alice earns yield
@@ -283,7 +290,7 @@ contract P2PLendingTest is Test {
         // Bob deposits later
         vm.startPrank(bob);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         // More time passes
@@ -305,11 +312,11 @@ contract P2PLendingTest is Test {
     function test_Revert_RepayTwice() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         p2p.matchOrders(1);
 
@@ -324,13 +331,13 @@ contract P2PLendingTest is Test {
     function test_YieldNotStolenOnMatch() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 30 days);
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         p2p.matchOrders(1);
 
@@ -343,12 +350,12 @@ contract P2PLendingTest is Test {
     function test_ShareRoundingEdge() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), 1);
-        p2p.placeLenderOrder(1, RATE_BPS);
+        p2p.placeLenderOrder(1, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.startPrank(bob);
         asset.approve(address(p2p), 1);
-        p2p.placeLenderOrder(1, RATE_BPS);
+        p2p.placeLenderOrder(1, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         // Ensure no zero shares edge case
@@ -358,7 +365,7 @@ contract P2PLendingTest is Test {
     function test_PreviewFunctions() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         uint256 shares = p2p.totalShares();
@@ -373,11 +380,11 @@ contract P2PLendingTest is Test {
     function test_CancelAfterPartialMatch() public {
         vm.startPrank(alice);
         asset.approve(address(p2p), LEND_AMOUNT);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
 
         vm.prank(bob);
-        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, MIN_AMOUNT_OUT, DEADLINE);
 
         p2p.matchOrders(1);
 
@@ -385,5 +392,24 @@ contract P2PLendingTest is Test {
         p2p.cancelLenderOrder(1);
 
         assertGt(asset.balanceOf(alice), 0);
+    }
+
+    function test_LP_EarnsFees() public {
+        vm.startPrank(alice);
+        asset.approve(address(p2p), LEND_AMOUNT);
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, 0, DEADLINE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        p2p.placeBorrowOrder(BORROW_AMOUNT, RATE_BPS, 0, DEADLINE);
+
+        p2p.matchOrders(1);
+
+        // cancel remaining liquidity
+        vm.prank(alice);
+        p2p.cancelLenderOrder(1);
+
+        // Alice should have MORE than initial - lend
+        assertGt(asset.balanceOf(alice), INITIAL_BALANCE - LEND_AMOUNT);
     }
 }

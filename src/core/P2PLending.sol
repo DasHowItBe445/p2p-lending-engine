@@ -27,6 +27,8 @@ contract P2PLending is ReentrancyGuard {
     mapping(uint256 => OrderTypes.LenderOrder) public lenderOrders;
     mapping(uint256 => OrderTypes.BorrowOrder) public borrowOrders;
     mapping(uint256 => OrderTypes.LoanPosition) public loanPositions;
+    mapping(address => uint256) public lenderWithdrawable;
+    mapping(uint256 => uint256) public lenderOrderShares;
 
     uint256 public totalShares;
 
@@ -161,6 +163,8 @@ contract P2PLending is ReentrancyGuard {
         lpToken.mint(msg.sender, shares);
         totalShares += shares;
 
+        lenderOrderShares[id] = shares;
+
         asset.safeIncreaseAllowance(address(aaveConnector), amount);
         aaveConnector.deposit(amount);
 
@@ -201,45 +205,59 @@ contract P2PLending is ReentrancyGuard {
         uint256 ts = block.timestamp;
 
         for (uint256 i = 0; i < maxItems; i++) {
-            uint256 lenderBucket = _nextLenderBucket();
-            uint256 borrowBucket = _nextBorrowBucket();
-            if (lenderBucket == type(uint256).max || borrowBucket == type(uint256).max) break;
-
-            uint256 lid = lenderHeadOrderId[lenderBucket];
-            uint256 bid = borrowHeadOrderId[borrowBucket];
-            if (lid == 0 || bid == 0) break;
-
-            OrderTypes.LenderOrder storage lo = lenderOrders[lid];
-            OrderTypes.BorrowOrder storage bo = borrowOrders[bid];
-
-            if (lo.minRateBps > bo.maxRateBps) break;
-
-            uint256 fill = lo.remaining < bo.remaining ? lo.remaining : bo.remaining;
-
-            uint256 fee = (fill * FEE_BPS) / 10_000;
-            uint256 amountAfterFee = fill - fee;
-
-            uint32 rateBps = lo.minRateBps;
-
-            aaveConnector.withdraw(amountAfterFee, bo.owner);
-
-            lo.remaining -= uint128(fill);
-            bo.remaining -= uint128(fill);
-
-            if (lo.remaining == 0) _dequeueLender(lenderBucket);
-            if (bo.remaining == 0) _dequeueBorrow(borrowBucket);
-
-            uint256 loanId = nextLoanId++;
-            loanPositions[loanId] = OrderTypes.LoanPosition({
-                lender: lo.owner,
-                borrower: bo.owner,
-                principal: uint128(fill),
-                rateBps: rateBps,
-                startTime: uint32(ts)
-            });
-
-            emit Matched(lid, bid, rateBps, fill, loanId);
+            _matchSingle(ts);
         }
+    }
+
+    function _matchSingle(uint256 ts) internal {
+        uint256 lenderBucket = _nextLenderBucket();
+        uint256 borrowBucket = _nextBorrowBucket();
+        if (lenderBucket == type(uint256).max || borrowBucket == type(uint256).max) return;
+
+        uint256 lid = lenderHeadOrderId[lenderBucket];
+        uint256 bid = borrowHeadOrderId[borrowBucket];
+        if (lid == 0 || bid == 0) return;
+
+        OrderTypes.LenderOrder storage lo = lenderOrders[lid];
+        OrderTypes.BorrowOrder storage bo = borrowOrders[bid];
+
+        if (lo.minRateBps > bo.maxRateBps) return;
+
+        uint256 fill = lo.remaining < bo.remaining ? lo.remaining : bo.remaining;
+
+        uint32 rateBps = lo.minRateBps;
+
+        uint256 orderShares = lenderOrderShares[lid];
+
+        uint256 sharesToBurn = _assetsToShares(fill);
+        if (sharesToBurn > orderShares) sharesToBurn = orderShares;
+
+        lenderOrderShares[lid] = orderShares - sharesToBurn;
+
+        lpToken.burn(lo.owner, sharesToBurn);
+        totalShares -= sharesToBurn;
+
+        uint256 fee = (fill * FEE_BPS) / 10_000;
+        uint256 amountOut = fill - fee;
+
+        aaveConnector.withdraw(amountOut, bo.owner);
+
+        lo.remaining -= uint128(fill);
+        bo.remaining -= uint128(fill);
+
+        if (lo.remaining == 0) _dequeueLender(lenderBucket);
+        if (bo.remaining == 0) _dequeueBorrow(borrowBucket);
+
+        uint256 loanId = nextLoanId++;
+        loanPositions[loanId] = OrderTypes.LoanPosition({
+            lender: lo.owner,
+            borrower: bo.owner,
+            principal: uint128(fill),
+            rateBps: rateBps,
+            startTime: uint32(ts)
+        });
+
+        emit Matched(lid, bid, rateBps, fill, loanId);
     }
 
     function _nextLenderBucket() internal view returns (uint256) {
@@ -254,7 +272,8 @@ contract P2PLending is ReentrancyGuard {
         uint256 bits = borrowBucketBitset;
         if (bits == 0) return type(uint256).max;
 
-        return _msb(bits); // highest set bit
+        uint256 lsb = _lsb(bits);
+        return _bitIndex(lsb);
     }
 
     function cancelLenderOrder(uint256 orderId) external nonReentrant {
@@ -263,15 +282,21 @@ contract P2PLending is ReentrancyGuard {
         if (o.owner != msg.sender) revert Unauthorized();
         if (o.remaining == 0) revert InvalidAmount();
 
-        uint256 remaining = o.remaining;
         uint256 bucket = _lenderBucket(o.minRateBps);
-
         _removeLenderFromQueue(orderId, bucket);
+
+        uint256 shares = lenderOrderShares[orderId];
+        uint256 assets = _sharesToAssets(shares);
+
+        lpToken.burn(msg.sender, shares);
+        totalShares -= shares;
+
+        delete lenderOrderShares[orderId];
         delete lenderOrders[orderId];
 
-        aaveConnector.withdraw(remaining, msg.sender);
+        aaveConnector.withdraw(assets, msg.sender);
 
-        emit LenderOrderCancelled(orderId, remaining);
+        emit LenderOrderCancelled(orderId, assets);
     }
 
     function _removeLenderFromQueue(uint256 orderId, uint256 bucket) internal {
@@ -318,18 +343,19 @@ contract P2PLending is ReentrancyGuard {
         uint128 principal128 = pos.principal;
         if (principal128 == 0) revert LoanAlreadyRepaid();
 
-        uint256 ts = block.timestamp;
-        uint256 elapsed = ts - uint256(pos.startTime);
+        uint256 elapsed = block.timestamp - uint256(pos.startTime);
 
         uint256 principal = uint256(principal128);
         uint256 interest = (principal * uint256(pos.rateBps) * elapsed) / (10_000 * YEAR);
         uint256 totalOwed = principal + interest;
 
+        address lender = pos.lender;
+
         delete loanPositions[loanId];
 
         asset.safeTransferFrom(msg.sender, address(this), totalOwed);
-        asset.safeIncreaseAllowance(address(aaveConnector), totalOwed);
-        aaveConnector.deposit(totalOwed);
+
+        lenderWithdrawable[lender] += totalOwed;
 
         emit LoanRepaid(loanId, totalOwed, interest);
     }
@@ -387,5 +413,30 @@ contract P2PLending is ReentrancyGuard {
     function getLPPrice() external view returns (uint256) {
         if (totalShares == 0) return 0;
         return (_totalAssets() * 1e18) / totalShares;
+    }
+
+    function getLPToken() external view returns (address) {
+        return address(lpToken);
+    }
+
+    function getWithdrawable(address user) external view returns (uint256) {
+        return lenderWithdrawable[user];
+    }
+
+    function withdraw() external nonReentrant {
+        uint256 amount = lenderWithdrawable[msg.sender];
+        if (amount == 0) revert InvalidAmount();
+
+        lenderWithdrawable[msg.sender] = 0;
+        asset.safeTransfer(msg.sender, amount);
+    }
+
+    function previewCancel(uint256 orderId) external view returns (uint256) {
+        uint256 shares = lenderOrderShares[orderId];
+        return _sharesToAssets(shares);
+    }
+
+    function getFeeBps() external pure returns (uint256) {
+        return FEE_BPS;
     }
 }

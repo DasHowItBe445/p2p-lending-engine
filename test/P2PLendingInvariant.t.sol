@@ -6,9 +6,12 @@ import "../src/core/P2PLending.sol";
 import "../src/core/AaveConnector.sol";
 import "../src/mocks/MockERC20.sol";
 import "../src/mocks/MockAavePool.sol";
+import "forge-std/StdInvariant.sol";
+import "./P2PLendingHandler.t.sol";
 
-contract P2PLendingInvariant is Test {
+contract P2PLendingInvariant is StdInvariant, Test {
     P2PLending public p2p;
+    P2PLendingHandler handler;
     AaveConnector public connector;
     MockERC20 public asset;
     MockAavePool public pool;
@@ -18,6 +21,9 @@ contract P2PLendingInvariant is Test {
     uint256 constant INITIAL_BALANCE = 100_000 * 1e6;
     uint256 constant LEND_AMOUNT = 1_000 * 1e6;
     uint256 constant RATE_BPS = 500;
+
+    uint256 constant MIN_SHARES_OUT = 0;
+    uint256 constant DEADLINE = type(uint256).max;
 
     function setUp() public {
         asset = new MockERC20("Mock USDC", "USDC", 6);
@@ -33,8 +39,11 @@ contract P2PLendingInvariant is Test {
 
         vm.startPrank(alice);
         asset.approve(address(p2p), type(uint256).max);
-        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS); // initial state setup
+        p2p.placeLenderOrder(LEND_AMOUNT, RATE_BPS, MIN_SHARES_OUT, DEADLINE);
         vm.stopPrank();
+
+        handler = new P2PLendingHandler(p2p, asset, alice);
+        targetContract(address(handler));
     }
 
     function invariant_totalSharesConsistency() public view {
@@ -48,7 +57,10 @@ contract P2PLendingInvariant is Test {
 
     function invariant_aaveBalanceNonZero() public view {
         uint256 aaveBalance = pool.balanceOf(address(asset), address(connector));
-        assertGe(aaveBalance, 0);
+        assertGe(
+            aaveBalance,
+            p2p.previewSharesToAssets(p2p.totalShares())
+        );
     }
 
     function invariant_sharesNonNegative() public view {

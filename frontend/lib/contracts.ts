@@ -3,6 +3,7 @@ import { type Address } from 'viem'
 // Contract addresses - Replace these with your deployed contract addresses
 export const MOCK_ERC20_ADDRESS: Address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
 export const P2P_LENDING_ADDRESS: Address = '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9'
+export const LP_TOKEN_ADDRESS: Address = '0xd8058efe0198ae9dD7D563e1b4938Dcbc86A1F81'
 
 // ERC20 ABI (Standard + Approve)
 export const ERC20_ABI = [
@@ -63,6 +64,17 @@ export const ERC20_ABI = [
       { name: 'amount', type: 'uint256' },
     ],
     outputs: [{ type: 'bool' }],
+  },
+] as const
+
+// LP Token ABI
+export const LP_TOKEN_ABI = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
   },
 ] as const
 
@@ -247,5 +259,12 @@ export const P2P_LENDING_ABI = [
       { name: 'totalPaid', type: 'uint256', indexed: false },
       { name: 'interestPaid', type: 'uint256', indexed: false },
     ],
+  },
+  {
+    name: 'getLPPrice',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
   },
 ] as const

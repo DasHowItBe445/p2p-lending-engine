@@ -2,6 +2,7 @@
 
 import { useWriteContract, useWaitForTransactionReceipt, useReadContract, useAccount } from 'wagmi'
 import { parseUnits } from 'viem'
+import { LP_TOKEN_ADDRESS, LP_TOKEN_ABI } from '@/lib/contracts'
 import { 
   MOCK_ERC20_ADDRESS, 
   P2P_LENDING_ADDRESS, 
@@ -222,4 +223,32 @@ export function useTokenAllowance() {
     allowance: allowance || BigInt(0),
     refetch,
   }
+
+}
+// LP DATA HOOK
+export function useLPData() {
+const { address } = useAccount()
+
+// LP balance
+const { data: lpBalance } = useReadContract({
+  address: LP_TOKEN_ADDRESS,
+  abi: LP_TOKEN_ABI,
+  functionName: 'balanceOf',
+  args: address ? [address] : undefined,
+  query: {
+    enabled: !!address,
+  },
+})
+
+// LP price
+const { data: lpPrice } = useReadContract({
+  address: P2P_LENDING_ADDRESS,
+  abi: P2P_LENDING_ABI,
+  functionName: 'getLPPrice',
+})
+
+return {
+  lpBalance: lpBalance || BigInt(0),
+  lpPrice: lpPrice || BigInt(0),
+}
 }
