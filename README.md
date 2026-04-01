@@ -13,6 +13,10 @@ This design mirrors real-world DeFi primitives such as Aave and on-chain order b
 - **Partial fills**: Orders can be partially filled; remainder stays in queue until filled or cancelled.
 - **Repay & withdraw**: Borrowers repay principal (and interest); lenders withdraw via pull pattern.
 - **Yield-aware accounting**: Share-based system ensures lenders earn proportional Aave yield on unused liquidity.
+- **LP share-based accounting**: Liquidity providers receive shares representing proportional ownership of pooled assets.
+- **Fee mechanism (0.3%)**: Each match charges a fee that remains in the pool, increasing LP value over time.
+- **Slippage protection**: Borrowers can specify `minAmountOut` and `deadline` to protect against unfavorable execution.
+- **Preview functions**: Includes helpers like `previewMatch`, `getTotalAssets`, and utilization metrics.
 
 ## Project Structure
 
@@ -72,7 +76,7 @@ sequenceDiagram
 ### Order types (OrderTypes.sol)
 
 - **LenderOrder**: `owner`, `amount`, `minRateBps`, `createdAt`, `remaining` (packed: uint128/uint32 where possible).
-- **BorrowOrder**: `owner`, `amount`, `maxRateBps`, `createdAt`, `remaining`.
+- **BorrowOrder**: `owner`, `amount`, `maxRateBps`, `createdAt`, `remaining`, `minAmountOut` (for slippage protection).
 - **LoanPosition**: `lender`, `borrower`, `principal`, `rateBps`, `startTime`.
 
 Rates are in basis points (bps); 10000 = 100%.
@@ -90,6 +94,8 @@ Rates are in basis points (bps); 10000 = 100%.
 - **Borrower side**: Take the **highest** non-empty borrow bucket (highest max rate first).
 - **Match condition**: `lender.minRateBps <= borrower.maxRateBps`. Fill amount = `min(lender.remaining, borrower.remaining)`.
 - **After fill**: Update `remaining`; if 0, dequeue. Create `LoanPosition`. Withdraw fill amount from Aave and send to borrower.
+- **Fee deduction**: A 0.3% fee is applied on each match (`amountOut = fill - fee`).
+- **Slippage check**: Match reverts if `amountOut < borrower.minAmountOut`.
 
 ### Interest Model
 
@@ -110,9 +116,25 @@ This keeps accounting simple and gas-efficient.
 
 1. **Lender deposits**: User approves P2PLending → `placeLenderOrder(amount, minRateBps)` → P2PLending pulls tokens → approves AaveConnector → AaveConnector pulls from P2PLending and calls `pool.supply(asset, amount, connector, 0)`. aTokens accrue to the connector.
 2. **Match**: When `matchOrders` finds a match, P2PLending calls `connector.withdraw(fillAmount, borrower)` → connector calls `pool.withdraw(asset, amount, borrower)`; borrower receives underlying asset.
+- A 0.3% fee is retained in the pool during withdrawal, increasing LP share value.
 3. **Lender cancel**: P2PLending calculates `assetsOut` from the lender’s shares and calls `connector.withdraw(assetsOut, lender)`, ensuring the lender receives principal + accrued yield.
 
 (Optional: add a sequence diagram here if you use a tool like Mermaid.)
+
+## Slippage Protection
+
+To protect users from unfavorable execution:
+
+- **minAmountOut**: Borrowers specify the minimum acceptable amount after fees.
+- **deadline**: Transactions revert if executed after a specified timestamp.
+
+During matching:
+- The protocol computes `amountOut = fill - fee`
+- If `amountOut < minAmountOut`, the transaction reverts
+
+This ensures borrowers are protected from:
+- Fee impact
+- Partial fills with worse-than-expected outcomes
 
 ## Yield & Share Accounting
 
@@ -138,6 +160,13 @@ The protocol uses a **share-based accounting model** to track each lender’s pr
   - **Principal + accrued yield**
 
 This mirrors real DeFi protocols like Aave and Yearn.
+
+### Fee Impact
+
+- Fees collected during matching are not distributed immediately.
+- Instead, they remain in the Aave pool, increasing `totalAssets`.
+- Since `totalShares` remains unchanged, each share becomes more valuable.
+- This ensures LPs earn fees implicitly via share price appreciation. 
 
 ## Gas-Saving Choices
 
@@ -225,6 +254,16 @@ forge test --gas-report
 ## Deploy (example with mocks)
 
 Deploy order: MockERC20 → MockAavePool → AaveConnector(pool, asset, P2PLending address) → P2PLending(asset, connector). Use CREATE2 or a factory to get the P2PLending address before deploying the connector, since the connector’s protocol must be the final P2PLending address.
+
+## Preview & Analytics
+
+The protocol includes helper view functions:
+
+- `previewMatch(lenderId, borrowId)` → returns expected fill, fee, and amountOut
+- `getTotalAssets()` → total liquidity managed by the protocol
+- `getUtilization()` → ratio of borrowed vs total liquidity
+
+These functions improve frontend integration and transparency.
 
 ## Security
 
